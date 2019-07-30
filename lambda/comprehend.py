@@ -15,7 +15,7 @@ import json
 import io
 from io import BytesIO
 import sys
-
+from trp import Document
 
 try:
     from urllib.parse import unquote_plus
@@ -31,13 +31,11 @@ print(boto3.__version__)
 print('core path setup')
 s3 = boto3.resource('s3')
 s3client = boto3.client('s3')
-print('initializing comprehend')
-comprehend = boto3.client(service_name='comprehend', region_name='us-east-1')
-print('done')
+
 host= os.environ['esDomain']
 print("ES DOMAIN IS..........")
+region=os.environ['AWS_REGION']
 
-region = 'us-east-1' # e.g. us-west-1
 service = 'es'
 credentials = boto3.Session().get_credentials()
 
@@ -65,11 +63,43 @@ print("setting up Textract")
 # get the results
 textract = boto3.client(
          service_name='textract',
-         region_name= 'us-east-1',
-         endpoint_url='https://textract.us-east-1.amazonaws.com',
-)
+         region_name=region)
 
-print("Textract Set UP")
+print('initializing comprehend')
+comprehend = boto3.client(service_name='comprehend', region_name=region)
+print('done')
+
+def outputForm(page):
+        csvData = []
+        for field in page.form.fields:
+            csvItem  = []
+            if(field.key):
+                csvItem.append(field.key.text)
+            else:
+                csvItem.append("")
+            if(field.value):
+                csvItem.append(field.value.text)
+            else:
+                csvItem.append("")
+            csvData.append(csvItem)
+        return csvData
+
+def outputTable(page):
+    csvData = []
+    print("//////////////////")
+    #print(page)
+    for table in page.tables:
+            csvRow = []
+            csvRow.append("Table")
+            csvData.append(csvRow)
+            for row in table.rows:
+                csvRow  = []
+                for cell in row.cells:
+                    csvRow.append(cell.text)
+                csvData.append(csvRow)
+            csvData.append([])
+            csvData.append([])
+    return csvData
 # --------------- Main Lambda Handler ------------------
 
 
@@ -90,17 +120,23 @@ def handler(event, context):
         with open('/tmp/{}', 'rb') as document:
             imageBytes = bytearray(document.read())
         print("Object downloaded")
-        #Analyze the text using TEXTRACT
-        #textract = AwsHelper().getClient('textract')
         response = textract.analyze_document(Document={'Bytes': imageBytes},FeatureTypes=["TABLES", "FORMS"])
+        document = Document(response)
+        table=[]
+        forms=[]
+        #print(document)
+        for page in document.pages:
+                table = outputTable(page)
+                forms = outputForm(page)
+        print(table)
         blocks=response['Blocks']
         for block in blocks:
             if block['BlockType'] == 'LINE':
                 text += block['Text']+"\n"
         print(text)
         # Extracting Key Phrases
-        sentiment_response = comprehend.detect_key_phrases(Text=text, LanguageCode='en')
-        KeyPhraseList=sentiment_response.get("KeyPhrases")
+        keyphrase_response = comprehend.detect_key_phrases(Text=text, LanguageCode='en')
+        KeyPhraseList=keyphrase_response.get("KeyPhrases")
         for s in KeyPhraseList:
               textvalues.append(s.get("Text"))
                     
@@ -109,8 +145,9 @@ def handler(event, context):
         for s in EntityList:
                 textvalues_entity.update([(s.get("Type").strip('\t\n\r'),s.get("Text").strip('\t\n\r'))])
 
-        s3url= 'https://s3.console.aws.amazon.com/s3/object/'+bucket+'/'+key+'?region=us-east-1'
-        searchdata={'s3link':s3url,'KeyPhrases':textvalues,'Entity':textvalues_entity,'text':text}
+        s3url= 'https://s3.console.aws.amazon.com/s3/object/'+bucket+'/'+key+'?region='+region
+        
+        searchdata={'s3link':s3url,'KeyPhrases':textvalues,'Entity':textvalues_entity,'text':text, 'table':table, 'forms':forms}
         print(searchdata)
         print("connecting to ES")
         es=connectES()
