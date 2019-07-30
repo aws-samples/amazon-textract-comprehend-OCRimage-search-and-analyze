@@ -1,0 +1,464 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+- AWS::Serverless-2016-10-31
+Parameters:
+  DOMAINNAME:
+    Description: Name for the Amazon ES domain that this template will create. Domain
+      names must start with a lowercase letter and must be between 3 and 28 characters.
+      Valid characters are a-z (lowercase only), 0-9.
+    Type: String
+    Default: documentsearchapp
+  CognitoAdminEmail:
+    Type: String
+    Default: abc@amazon.com
+    AllowedPattern: ^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$
+    Description: E-mail address of the Cognito admin name
+Mappings:
+  SourceCode:
+    General:
+      S3Bucket: solutions
+      KeyPrefix: centralized-logging/v2.2.0
+Resources:
+  MyLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: Boto3
+      Description: My Lambda Layer with Deserialize Function, Objectpath Module &
+        AWS Regions JSON
+      ContentUri: s3://aws-codestar-us-east-1-820570838999-test-pipe/bb0fcb3a905cef4ebb56fc4908ff76ae
+      CompatibleRuntimes:
+      - python3.6
+      - python3.7
+  ComprehendKeyPhraseAnalysis:
+    Properties:
+      Description: Triggered by S3 review upload to the repo bucket and start the
+        key phrase analysis via Amazon Comprehend
+      Handler: comprehend.handler
+      MemorySize: 128
+      Policies:
+        Statement:
+        - Sid: comprehend
+          Effect: Allow
+          Action:
+          - comprehend:*
+          Resource: '*'
+        - Sid: textract
+          Effect: Allow
+          Action:
+          - textract:*
+          Resource: '*'
+        - Sid: s3
+          Effect: Allow
+          Action:
+          - s3:*
+          Resource:
+            Fn::Sub: arn:aws:s3:::${S3}/*
+        - Sid: es
+          Effect: Allow
+          Action:
+          - es:*
+          Resource: '*'
+      Environment:
+        Variables:
+          bucket:
+            Ref: S3
+          esDomain:
+            Fn::GetAtt:
+            - ElasticsearchDomain
+            - DomainEndpoint
+      Runtime: python3.6
+      Timeout: 300
+      Layers:
+      - Ref: MyLayer
+      CodeUri: s3://aws-codestar-us-east-1-820570838999-test-pipe/5a5bbf653bb0bf7ad650057c85e3330a
+    Type: AWS::Serverless::Function
+  S3:
+    Type: AWS::S3::Bucket
+  TestS3BucketEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:invokeFunction
+      SourceAccount:
+        Ref: AWS::AccountId
+      FunctionName:
+        Ref: ComprehendKeyPhraseAnalysis
+      SourceArn:
+        Fn::GetAtt:
+        - S3
+        - Arn
+      Principal: s3.amazonaws.com
+  ApplyNotificationFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Path: /
+      Policies:
+      - PolicyName: S3BucketNotificationPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Sid: AllowBucketNotification
+            Effect: Allow
+            Action: s3:PutBucketNotification
+            Resource:
+            - Fn::Sub: arn:aws:s3:::${S3}
+            - Fn::Sub: arn:aws:s3:::${S3}/*
+  ApplyBucketNotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Dummy function, just logs the received event
+      Handler: index.handler
+      Runtime: python2.7
+      Role:
+        Fn::GetAtt:
+        - ApplyNotificationFunctionRole
+        - Arn
+      Timeout: 240
+      Code:
+        ZipFile: "import boto3\nimport logging\nimport json\nimport cfnresponse\n\n\
+          s3Client = boto3.client('s3')\nlogger = logging.getLogger()\nlogger.setLevel(logging.DEBUG)\n\
+          \ndef addBucketNotification(bucketName, notificationId, functionArn):\n\
+          \  notificationResponse = s3Client.put_bucket_notification_configuration(\n\
+          \    Bucket=bucketName,\n    NotificationConfiguration={\n      'LambdaFunctionConfigurations':\
+          \ [\n        {\n          'Id': notificationId,\n          'LambdaFunctionArn':\
+          \ functionArn,\n          'Events': [\n            's3:ObjectCreated:*'\n\
+          \          ]\n        },\n      ]\n    }\n  )\n  return notificationResponse\n\
+          \ndef create(properties, physical_id):\n  bucketName = properties['S3Bucket']\n\
+          \  notificationId = properties['NotificationId']\n  functionArn = properties['FunctionARN']\n\
+          \  response = addBucketNotification(bucketName, notificationId, functionArn)\n\
+          \  logger.info('AddBucketNotification response: %s' % json.dumps(response))\n\
+          \  return cfnresponse.SUCCESS, physical_id\n\ndef update(properties, physical_id):\n\
+          \  return cfnresponse.SUCCESS, None\n\ndef delete(properties, physical_id):\n\
+          \  return cfnresponse.SUCCESS, None\n\ndef handler(event, context):\n  logger.info('Received\
+          \ event: %s' % json.dumps(event))\n\n  status = cfnresponse.FAILED\n  new_physical_id\
+          \ = None\n\n  try:\n    properties = event.get('ResourceProperties')\n \
+          \   physical_id = event.get('PhysicalResourceId')\n\n    status, new_physical_id\
+          \ = {\n      'Create': create,\n      'Update': update,\n      'Delete':\
+          \ delete\n    }.get(event['RequestType'], lambda x, y: (cfnresponse.FAILED,\
+          \ None))(properties, physical_id)\n  except Exception as e:\n    logger.error('Exception:\
+          \ %s' % e)\n    status = cfnresponse.FAILED\n  finally:\n    cfnresponse.send(event,\
+          \ context, status, {}, new_physical_id)\n"
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName:
+        Fn::Sub: ${DOMAINNAME}_kibana_access
+      AutoVerifiedAttributes:
+      - email
+      MfaConfiguration: 'OFF'
+      EmailVerificationSubject:
+        Ref: AWS::StackName
+      Schema:
+      - Name: name
+        AttributeDataType: String
+        Mutable: true
+        Required: true
+      - Name: email
+        AttributeDataType: String
+        Mutable: false
+        Required: true
+  UserPoolGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      Description: User pool group for Kibana access
+      GroupName:
+        Fn::Sub: ${DOMAINNAME}_kibana_access_group
+      Precedence: 0
+      UserPoolId:
+        Ref: UserPool
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName:
+        Fn::Sub: ${DOMAINNAME}-client
+      GenerateSecret: false
+      UserPoolId:
+        Ref: UserPool
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName:
+        Fn::Sub: ${DOMAINNAME}Identity
+      AllowUnauthenticatedIdentities: true
+      CognitoIdentityProviders:
+      - ClientId:
+          Ref: UserPoolClient
+        ProviderName:
+          Fn::GetAtt:
+          - UserPool
+          - ProviderName
+  CognitoUnAuthorizedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated: cognito-identity.amazonaws.com
+          Action:
+          - sts:AssumeRoleWithWebIdentity
+          Condition:
+            StringEquals:
+              cognito-identity.amazonaws.com:aud:
+                Ref: IdentityPool
+            ForAnyValue:StringLike:
+              cognito-identity.amazonaws.com:amr: unauthenticated
+      Policies:
+      - PolicyName: CognitoUnauthorizedPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - mobileanalytics:PutEvents
+            - cognito-sync:BulkPublish
+            - cognito-sync:DescribeIdentityPoolUsage
+            - cognito-sync:GetBulkPublishDetails
+            - cognito-sync:GetCognitoEvents
+            - cognito-sync:GetIdentityPoolConfiguration
+            - cognito-sync:ListIdentityPoolUsage
+            - cognito-sync:SetCognitoEvents
+            - congito-sync:SetIdentityPoolConfiguration
+            Resource:
+              Fn::Sub: arn:aws:cognito-identity:${AWS::Region}:${AWS::AccountId}:identitypool/${IdentityPool}
+  CognitoAuthorizedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated: cognito-identity.amazonaws.com
+          Action:
+          - sts:AssumeRoleWithWebIdentity
+          Condition:
+            StringEquals:
+              cognito-identity.amazonaws.com:aud:
+                Ref: IdentityPool
+            ForAnyValue:StringLike:
+              cognito-identity.amazonaws.com:amr: authenticated
+      Policies:
+      - PolicyName: CognitoAuthorizedPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - mobileanalytics:PutEvents
+            - cognito-sync:BulkPublish
+            - cognito-sync:DescribeIdentityPoolUsage
+            - cognito-sync:GetBulkPublishDetails
+            - cognito-sync:GetCognitoEvents
+            - cognito-sync:GetIdentityPoolConfiguration
+            - cognito-sync:ListIdentityPoolUsage
+            - cognito-sync:SetCognitoEvents
+            - congito-sync:SetIdentityPoolConfiguration
+            - cognito-identity:DeleteIdentityPool
+            - cognito-identity:DescribeIdentityPool
+            - cognito-identity:GetIdentityPoolRoles
+            - cognito-identity:GetOpenIdTokenForDeveloperIdentity
+            - cognito-identity:ListIdentities
+            - cognito-identity:LookupDeveloperIdentity
+            - cognito-identity:MergeDeveloperIdentities
+            - cognito-identity:UnlikeDeveloperIdentity
+            - cognito-identity:UpdateIdentityPool
+            Resource:
+              Fn::Sub: arn:aws:cognito-identity:${AWS::Region}:${AWS::AccountId}:identitypool/${IdentityPool}
+  CognitoESAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonESCognitoAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: es.amazonaws.com
+          Action:
+          - sts:AssumeRole
+  IdentityPoolRoleMapping:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId:
+        Ref: IdentityPool
+      Roles:
+        authenticated:
+          Fn::GetAtt:
+          - CognitoAuthorizedRole
+          - Arn
+        unauthenticated:
+          Fn::GetAtt:
+          - CognitoUnAuthorizedRole
+          - Arn
+  AdminUser:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      DesiredDeliveryMediums:
+      - EMAIL
+      UserAttributes:
+      - Name: email
+        Value:
+          Ref: CognitoAdminEmail
+      Username:
+        Ref: CognitoAdminEmail
+      UserPoolId:
+        Ref: UserPool
+  SetupESCognito:
+    Type: Custom::SetupESCognito
+    Version: 1.0
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+        - LambdaESCognito
+        - Arn
+      Domain:
+        Ref: DOMAINNAME
+      CognitoDomain:
+        Fn::Sub: ${DOMAINNAME}-${AWS::AccountId}
+      UserPoolId:
+        Ref: UserPool
+      IdentityPoolId:
+        Ref: IdentityPool
+      RoleArn:
+        Fn::GetAtt:
+        - CognitoESAccessRole
+        - Arn
+  LambdaESCognito:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Centralized Logging - Lambda function to enable cognito authentication
+        for kibana
+      Environment:
+        Variables:
+          LOG_LEVEL: INFO
+      Handler: index.handler
+      Runtime: nodejs8.10
+      Timeout: 600
+      Role:
+        Fn::GetAtt:
+        - LambdaESCognitoRole
+        - Arn
+      Code:
+        S3Bucket:
+          Fn::Join:
+          - '-'
+          - - Fn::FindInMap:
+              - SourceCode
+              - General
+              - S3Bucket
+            - Ref: AWS::Region
+        S3Key:
+          Fn::Join:
+          - /
+          - - Fn::FindInMap:
+              - SourceCode
+              - General
+              - KeyPrefix
+            - clog-auth.zip
+  LambdaESCognitoRole:
+    Type: AWS::IAM::Role
+    DependsOn: ElasticsearchDomain
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+          - Effect: Allow
+            Action:
+            - es:UpdateElasticsearchDomainConfig
+            Resource:
+              Fn::Sub: arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${DOMAINNAME}
+          - Effect: Allow
+            Action:
+            - cognito-idp:CreateUserPoolDomain
+            - cognito-idp:DeleteUserPoolDomain
+            Resource:
+              Fn::GetAtt:
+              - UserPool
+              - Arn
+          - Effect: Allow
+            Action:
+            - iam:PassRole
+            Resource:
+              Fn::GetAtt:
+              - CognitoESAccessRole
+              - Arn
+  ElasticsearchDomain:
+    Type: AWS::Elasticsearch::Domain
+    Properties:
+      DomainName:
+        Ref: DOMAINNAME
+      ElasticsearchVersion: '6.3'
+      ElasticsearchClusterConfig:
+        InstanceCount: '1'
+        InstanceType: t2.small.elasticsearch
+      EBSOptions:
+        EBSEnabled: true
+        Iops: 0
+        VolumeSize: 10
+        VolumeType: gp2
+      SnapshotOptions:
+        AutomatedSnapshotStartHour: '0'
+      AccessPolicies:
+        Version: '2012-10-17'
+        Statement:
+        - Action: es:*
+          Principal:
+            AWS:
+              Fn::Sub:
+              - arn:aws:sts::${AWS::AccountId}:assumed-role/${AuthRole}/CognitoIdentityCredentials
+              - AuthRole:
+                  Ref: CognitoAuthorizedRole
+          Effect: Allow
+          Resource:
+            Fn::Sub: arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${DOMAINNAME}/*
+  ApplyNotification:
+    Type: Custom::ApplyNotification
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+        - ApplyBucketNotificationFunction
+        - Arn
+      S3Bucket:
+        Ref: S3
+      FunctionARN:
+        Fn::GetAtt:
+        - ComprehendKeyPhraseAnalysis
+        - Arn
+      NotificationId: S3ObjectCreatedEvent
+Outputs:
+  S3KeyPhraseBucket:
+    Value:
+      Fn::Sub: https://console.aws.amazon.com/s3/buckets/${S3}/?region=us-east-1
+  KibanaLoginURL:
+    Description: Kibana login URL
+    Value:
+      Fn::Sub: https://${ElasticsearchDomain.DomainEndpoint}/_plugin/kibana/
