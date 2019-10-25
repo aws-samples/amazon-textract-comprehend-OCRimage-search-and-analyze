@@ -2,6 +2,9 @@ AWSTemplateFormatVersion: 2010-09-09
 Transform:
 - AWS::Serverless-2016-10-31
 Parameters:
+  ProjectId:
+    Type: String
+    Description: CodeStar projectId used to associate new resources to team members
   DOMAINNAME:
     Description: Name for the Amazon ES domain that this template will create. Domain
       names must start with a lowercase letter and must be between 3 and 28 characters.
@@ -50,7 +53,7 @@ Resources:
         - Sid: s3
           Effect: Allow
           Action:
-          - s3:*
+          - s3:*Object
           Resource:
             Fn::Sub: arn:aws:s3:::${S3}/*
         - Sid: es
@@ -70,7 +73,7 @@ Resources:
       Timeout: 300
       Layers:
       - Ref: MyLayer
-      CodeUri: s3://aws-codestar-us-east-1-820570838999-test-pipe/5a5bbf653bb0bf7ad650057c85e3330a
+      CodeUri: s3://aws-codestar-us-east-1-820570838999-test-pipe/3c0a3b1c981cda97ffabeb704fd0abd2
     Type: AWS::Serverless::Function
   S3:
     Type: AWS::S3::Bucket
@@ -107,7 +110,7 @@ Resources:
           Statement:
           - Sid: AllowBucketNotification
             Effect: Allow
-            Action: s3:PutBucketNotification
+            Action: s3:PutBucketNotificationConfiguration
             Resource:
             - Fn::Sub: arn:aws:s3:::${S3}
             - Fn::Sub: arn:aws:s3:::${S3}/*
