@@ -2,9 +2,6 @@ AWSTemplateFormatVersion: 2010-09-09
 Transform:
 - AWS::Serverless-2016-10-31
 Parameters:
-  ProjectId:
-    Type: String
-    Description: CodeStar projectId used to associate new resources to team members
   DOMAINNAME:
     Description: Name for the Amazon ES domain that this template will create. Domain
       names must start with a lowercase letter and must be between 3 and 28 characters.
@@ -22,16 +19,6 @@ Mappings:
       S3Bucket: solutions
       KeyPrefix: centralized-logging/v2.2.0
 Resources:
-  MyLayer:
-    Type: AWS::Serverless::LayerVersion
-    Properties:
-      LayerName: Boto3
-      Description: My Lambda Layer with Deserialize Function, Objectpath Module &
-        AWS Regions JSON
-      ContentUri: s3://aws-codestar-us-east-1-820570838999-test-pipe/bb0fcb3a905cef4ebb56fc4908ff76ae
-      CompatibleRuntimes:
-      - python3.6
-      - python3.7
   ComprehendKeyPhraseAnalysis:
     Properties:
       Description: Triggered by S3 review upload to the repo bucket and start the
@@ -71,9 +58,7 @@ Resources:
             - DomainEndpoint
       Runtime: python3.6
       Timeout: 300
-      Layers:
-      - Ref: MyLayer
-      CodeUri: s3://aws-codestar-us-east-1-820570838999-test-pipe/3c0a3b1c981cda97ffabeb704fd0abd2
+      CodeUri: s3://aws-ml-blog/artifacts/NLP-powered-textract-comprehend/3c0a3b1c981cda97ffabeb704fd0abd2
     Type: AWS::Serverless::Function
   S3:
     Type: AWS::S3::Bucket
@@ -110,7 +95,7 @@ Resources:
           Statement:
           - Sid: AllowBucketNotification
             Effect: Allow
-            Action: s3:PutBucketNotificationConfiguration
+            Action: s3:PutBucketNotification
             Resource:
             - Fn::Sub: arn:aws:s3:::${S3}
             - Fn::Sub: arn:aws:s3:::${S3}/*
@@ -346,7 +331,7 @@ Resources:
         Variables:
           LOG_LEVEL: INFO
       Handler: index.handler
-      Runtime: nodejs8.10
+      Runtime: nodejs12.x
       Timeout: 600
       Role:
         Fn::GetAtt:
