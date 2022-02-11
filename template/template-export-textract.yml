@@ -104,7 +104,7 @@ Resources:
     Properties:
       Description: Dummy function, just logs the received event
       Handler: index.handler
-      Runtime: python2.7
+      Runtime: python3.9
       Role:
         Fn::GetAtt:
         - ApplyNotificationFunctionRole
